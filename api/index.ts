@@ -9,6 +9,7 @@ const settingsRouter = require("../routes/settings");
 const adminUsersRouter = require("../routes/adminUsers");
 const circleLoadRouter = require("../routes/circleLoad");
 const authRouter = require("../routes/auth");
+const dutyRosterRouter = require("../routes/dutyRoster");
 
 const app = express();
 
@@ -111,6 +112,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/calculations", calculationsRouter);
 app.use("/api/settings", settingsRouter);
 app.use("/api/admin/users", adminUsersRouter);
+app.use("/api/admin/duty-roster", dutyRosterRouter);
 app.use("/api/circle-load", circleLoadRouter);
 
 app.use((req, res) => {

@@ -183,7 +183,7 @@ router.get("/check", async (req, res) => {
 router.get("/me", requireAuth, async (req, res) => {
   try {
     const admin = await Admin.findById(req.admin.id).select(
-      "username email role isActive assignedStation lastLogin"
+      "username email displayName role isActive assignedStation lastLogin"
     );
     if (!admin) {
       return res.status(404).json({ success: false, message: "Admin not found" });
@@ -194,6 +194,7 @@ router.get("/me", requireAuth, async (req, res) => {
         id: admin._id,
         username: admin.username,
         email: admin.email,
+        displayName: admin.displayName || "",
         role: normalizeRole(admin.role),
         assignedStation: admin.assignedStation || "",
         lastLogin: admin.lastLogin,
@@ -203,6 +204,134 @@ router.get("/me", requireAuth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to load profile",
+      error: clientError(error),
+    });
+  }
+});
+
+// PATCH /api/auth/profile — self-service displayName + email
+router.patch("/profile", requireAuth, async (req, res) => {
+  try {
+    const admin = await Admin.findById(req.admin.id);
+    if (!admin) {
+      return res.status(404).json({ success: false, message: "Admin not found" });
+    }
+    if (admin.isActive === false) {
+      return res.status(403).json({ success: false, message: "Account is blocked" });
+    }
+
+    const { displayName, email } = req.body || {};
+
+    if (displayName !== undefined) {
+      admin.displayName = String(displayName).trim().slice(0, 80);
+    }
+
+    if (email !== undefined) {
+      const nextEmail = String(email || "").trim().toLowerCase();
+      if (nextEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+        return res.status(400).json({ success: false, message: "Invalid email address" });
+      }
+      if (nextEmail) {
+        const clash = await Admin.findOne({
+          email: nextEmail,
+          _id: { $ne: admin._id },
+        });
+        if (clash) {
+          return res.status(409).json({ success: false, message: "Email already in use" });
+        }
+        admin.email = nextEmail;
+      } else {
+        admin.email = undefined;
+      }
+    }
+
+    await admin.save();
+
+    const data = {
+      id: admin._id,
+      username: admin.username,
+      email: admin.email || "",
+      displayName: admin.displayName || "",
+      role: normalizeRole(admin.role),
+      assignedStation: admin.assignedStation || "",
+      lastLogin: admin.lastLogin,
+    };
+
+    const token = generateToken(admin._id, admin.username, admin.role);
+    res.cookie("admin_token", token, cookieOptions());
+    res.json({ success: true, message: "Profile updated", token, data });
+  } catch (error) {
+    console.error("Profile update error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update profile",
+      error: clientError(error),
+    });
+  }
+});
+
+// POST /api/auth/change-password
+router.post("/change-password", requireAuth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Current password and new password are required",
+      });
+    }
+    if (String(newPassword).length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({
+        success: false,
+        message: `New password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+      });
+    }
+    if (String(currentPassword) === String(newPassword)) {
+      return res.status(400).json({
+        success: false,
+        message: "New password must be different from current password",
+      });
+    }
+
+    const admin = await Admin.findById(req.admin.id);
+    if (!admin) {
+      return res.status(404).json({ success: false, message: "Admin not found" });
+    }
+
+    const match = await admin.comparePassword(String(currentPassword));
+    if (!match) {
+      return res.status(401).json({
+        success: false,
+        message: "Current password is incorrect",
+      });
+    }
+
+    admin.password = String(newPassword);
+    await admin.save();
+
+    const data = {
+      id: admin._id,
+      username: admin.username,
+      email: admin.email || "",
+      displayName: admin.displayName || "",
+      role: normalizeRole(admin.role),
+      assignedStation: admin.assignedStation || "",
+      lastLogin: admin.lastLogin,
+    };
+
+    const token = generateToken(admin._id, admin.username, admin.role);
+    res.cookie("admin_token", token, cookieOptions());
+    res.json({
+      success: true,
+      message: "Password changed successfully",
+      token,
+      data,
+    });
+  } catch (error) {
+    console.error("Change password error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to change password",
       error: clientError(error),
     });
   }
