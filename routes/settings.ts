@@ -19,6 +19,19 @@ function normalizeRingMap(raw) {
   return out;
 }
 
+function isValidHHmm(s) {
+  return /^\d{1,2}:\d{2}$/.test(String(s || "").trim());
+}
+
+function normalizeSlot(s) {
+  const m = String(s || "").trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (!Number.isFinite(h) || h < 0 || h > 23 || min < 0 || min > 59) return null;
+  return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+}
+
 function payload(doc) {
   const lean = typeof doc.toObject === "function" ? doc.toObject() : doc;
   return {
@@ -45,6 +58,9 @@ function payload(doc) {
         ],
     circleRelaxUntil: lean.circleRelaxUntil || "12:00",
     districtDayBoundary: lean.districtDayBoundary || "22:00",
+    nightLogStartSlot: lean.nightLogStartSlot || "00:00",
+    nightLogEndSlot: lean.nightLogEndSlot || "08:00",
+    nightLogUseAi: lean.nightLogUseAi !== false,
   };
 }
 
@@ -132,6 +148,89 @@ router.patch("/", requireAdmin, async (req, res) => {
         doc[f] = n;
         changed = true;
       }
+    }
+
+    if (body.circleRelaxUntil != null) {
+      const s = normalizeSlot(body.circleRelaxUntil);
+      if (!s) {
+        return res.status(400).json({
+          success: false,
+          message: "circleRelaxUntil must be HH:mm",
+        });
+      }
+      doc.circleRelaxUntil = s;
+      changed = true;
+    }
+
+    if (body.districtDayBoundary != null) {
+      const s = normalizeSlot(body.districtDayBoundary);
+      if (!s) {
+        return res.status(400).json({
+          success: false,
+          message: "districtDayBoundary must be HH:mm",
+        });
+      }
+      doc.districtDayBoundary = s;
+      changed = true;
+    }
+
+    if (body.circleRelaxedSlots != null) {
+      let slots = body.circleRelaxedSlots;
+      if (typeof slots === "string") {
+        slots = slots.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
+      }
+      if (!Array.isArray(slots)) {
+        return res.status(400).json({
+          success: false,
+          message: "circleRelaxedSlots must be an array or comma-separated string",
+        });
+      }
+      const normalized = [];
+      for (const raw of slots) {
+        const s = normalizeSlot(raw);
+        if (!s) {
+          return res.status(400).json({
+            success: false,
+            message: `Invalid relaxed slot: ${raw}`,
+          });
+        }
+        if (!normalized.includes(s)) normalized.push(s);
+      }
+      doc.circleRelaxedSlots = normalized;
+      changed = true;
+    }
+
+    if (body.nightLogStartSlot != null) {
+      const s = normalizeSlot(body.nightLogStartSlot);
+      if (!s) {
+        return res.status(400).json({
+          success: false,
+          message: "nightLogStartSlot must be HH:mm (e.g. 00:00)",
+        });
+      }
+      doc.nightLogStartSlot = s;
+      changed = true;
+    }
+
+    if (body.nightLogEndSlot != null) {
+      const s = normalizeSlot(body.nightLogEndSlot);
+      if (!s) {
+        return res.status(400).json({
+          success: false,
+          message: "nightLogEndSlot must be HH:mm (e.g. 08:00)",
+        });
+      }
+      doc.nightLogEndSlot = s;
+      changed = true;
+    }
+
+    if (body.nightLogUseAi != null) {
+      doc.nightLogUseAi =
+        body.nightLogUseAi === true ||
+        body.nightLogUseAi === "true" ||
+        body.nightLogUseAi === 1 ||
+        body.nightLogUseAi === "1";
+      changed = true;
     }
 
     if (!changed) {

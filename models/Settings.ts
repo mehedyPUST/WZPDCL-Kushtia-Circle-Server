@@ -50,6 +50,14 @@ const settingsSchema = new mongoose.Schema(
      * Default 22:00 → previous day 22:00 through today 22:00.
      */
     districtDayBoundary: { type: String, default: "22:00" },
+    /**
+     * Night log generation window (HH:mm). Anchors required at these two ends;
+     * intermediate hours are generated (AI or local algorithm).
+     */
+    nightLogStartSlot: { type: String, default: "00:00" },
+    nightLogEndSlot: { type: String, default: "08:00" },
+    /** Prefer Grok AI for night-log intermediate hours when XAI_API_KEY is set */
+    nightLogUseAi: { type: Boolean, default: true },
   },
   { timestamps: true }
 );
