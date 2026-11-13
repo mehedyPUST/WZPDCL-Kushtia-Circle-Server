@@ -10,6 +10,8 @@ const adminUsersRouter = require("../routes/adminUsers");
 const circleLoadRouter = require("../routes/circleLoad");
 const authRouter = require("../routes/auth");
 const dutyRosterRouter = require("../routes/dutyRoster");
+const stationNotesRouter = require("../routes/stationNotes");
+const monthlyEnergyRouter = require("../routes/monthlyEnergy");
 
 const app = express();
 
@@ -58,7 +60,7 @@ app.use(
       }
     },
     credentials: true,
-    methods: ["GET", "POST", "DELETE", "PATCH", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
@@ -114,6 +116,8 @@ app.use("/api/settings", settingsRouter);
 app.use("/api/admin/users", adminUsersRouter);
 app.use("/api/admin/duty-roster", dutyRosterRouter);
 app.use("/api/circle-load", circleLoadRouter);
+app.use("/api/station-notes", stationNotesRouter);
+app.use("/api/admin/monthly-energy", monthlyEnergyRouter);
 
 app.use((req, res) => {
   res.status(404).json({ success: false, message: "Route not found" });

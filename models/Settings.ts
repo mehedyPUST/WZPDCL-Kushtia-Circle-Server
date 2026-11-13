@@ -58,6 +58,23 @@ const settingsSchema = new mongoose.Schema(
     nightLogEndSlot: { type: String, default: "08:00" },
     /** Prefer Grok AI for night-log intermediate hours when XAI_API_KEY is set */
     nightLogUseAi: { type: Boolean, default: true },
+    /**
+     * Global monthly-energy feeder registry (all months past/future).
+     * Core Bottail feeders are always present; custom entries live here.
+     */
+    energyFeeders: {
+      type: [
+        {
+          feederId: { type: Number, required: true },
+          feederName: { type: String, default: "", trim: true },
+          category: { type: String, default: "33kv", trim: true },
+          meterOwners: { type: [String], default: ["PDB", "WZPDCL"] },
+          hasPeakOffPeak: { type: Boolean, default: false },
+          custom: { type: Boolean, default: true },
+        },
+      ],
+      default: [],
+    },
   },
   { timestamps: true }
 );
