@@ -1,4 +1,4 @@
-const mongoose = require("mongoose");
+import mongoose from "mongoose";
 
 const shiftMessageSchema = new mongoose.Schema(
   {
@@ -80,6 +80,8 @@ const shiftMessageSchema = new mongoose.Schema(
 shiftMessageSchema.index({ status: 1, createdAt: -1 });
 shiftMessageSchema.index({ targetShift: 1, status: 1, createdAt: -1 });
 
-module.exports =
+const ShiftMessage: mongoose.Model<any> =
   mongoose.models.ShiftMessage ||
   mongoose.model("ShiftMessage", shiftMessageSchema);
+
+export default ShiftMessage;

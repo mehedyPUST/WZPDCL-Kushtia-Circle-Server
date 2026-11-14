@@ -1,4 +1,4 @@
-const mongoose = require("mongoose");
+import mongoose from "mongoose";
 
 const energyRowSchema = new mongoose.Schema(
   {
@@ -40,6 +40,8 @@ const monthlyEnergySchema = new mongoose.Schema(
 
 monthlyEnergySchema.index({ year: 1, month: 1 }, { unique: true });
 
-module.exports =
+const MonthlyEnergyReading: mongoose.Model<any> =
   mongoose.models.MonthlyEnergyReading ||
   mongoose.model("MonthlyEnergyReading", monthlyEnergySchema);
+
+export default MonthlyEnergyReading;

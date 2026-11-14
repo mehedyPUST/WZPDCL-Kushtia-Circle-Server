@@ -1,5 +1,18 @@
-/** Kushtia circle grid stations */
-const CIRCLE_STATIONS = [
+import { dayKeyDhaka, DHAKA_OFFSET_MS } from "./dhakaTime.js";
+
+export interface CircleStation {
+  id: string;
+  name: string;
+  source: "calculator" | "manual";
+  note?: string;
+}
+
+export interface SlotOptions {
+  relaxedSlots?: string[];
+  relaxUntil?: string;
+}
+
+export const CIRCLE_STATIONS: CircleStation[] = [
   {
     id: "bottail",
     name: "Bottail (Kushtia)",
@@ -12,8 +25,8 @@ const CIRCLE_STATIONS = [
   { id: "chuadanga", name: "Chuadanga", source: "manual" },
 ];
 
-const SLOT_ORDER = (() => {
-  const slots = [];
+export const SLOT_ORDER: string[] = (() => {
+  const slots: string[] = [];
   for (let h = 0; h < 24; h++) {
     slots.push(`${String(h).padStart(2, "0")}:00`);
     if (h === 18) slots.push("18:30");
@@ -22,7 +35,7 @@ const SLOT_ORDER = (() => {
   return slots;
 })();
 
-const DEFAULT_RELAXED = [
+export const DEFAULT_RELAXED = [
   "01:00",
   "02:00",
   "03:00",
@@ -34,45 +47,35 @@ const DEFAULT_RELAXED = [
 ];
 
 /** Minutes after first submit before edit is allowed again */
-const EDIT_LOCK_MINUTES = 10;
+export const EDIT_LOCK_MINUTES = 10;
 
-const OFFSET_MS = 6 * 60 * 60 * 1000;
+export { dayKeyDhaka };
 
-function dayKeyDhaka(d = new Date()) {
-  const shifted = new Date(d.getTime() + OFFSET_MS);
-  const y = shifted.getUTCFullYear();
-  const m = String(shifted.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(shifted.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function slotInstantUtc(dayKey, hourSlot) {
+export function slotInstantUtc(dayKey: string, hourSlot: string): Date | null {
   const m = String(hourSlot || "").match(/^(\d{1,2}):(\d{2})$/);
   if (!m || !/^\d{4}-\d{2}-\d{2}$/.test(String(dayKey || ""))) return null;
   const hh = Number(m[1]);
   const mm = Number(m[2]);
-  const [Y, M, D] = String(dayKey).split("-").map(Number);
-  return new Date(Date.UTC(Y, M - 1, D, hh, mm, 0, 0) - OFFSET_MS);
-}
-
-function shiftDayKey(dayKey, delta) {
-  const [Y, M, D] = dayKey.split("-").map(Number);
-  const nd = new Date(Date.UTC(Y, M - 1, D + delta));
-  return `${nd.getUTCFullYear()}-${String(nd.getUTCMonth() + 1).padStart(2, "0")}-${String(nd.getUTCDate()).padStart(2, "0")}`;
+  const [y, month, d] = String(dayKey).split("-").map(Number);
+  return new Date(Date.UTC(y, month - 1, d, hh, mm, 0, 0) - DHAKA_OFFSET_MS);
 }
 
 /**
  * Slot open window (Dhaka wall clock on dayKey).
  *
  * Special rules:
- * - 19:00 → open 18:30 … 19:30
- * - 18:30 → open 18:00 for 60 min (until 19:00)
- * - 19:30 → open 19:00 for 60 min (until 20:00)
+ * - 19:00 -> open 18:30 .. 19:30
+ * - 18:30 -> open 18:00 for 60 min (until 19:00)
+ * - 19:30 -> open 19:00 for 60 min (until 20:00)
  *
- * Other full-hour slots: open 30 min before until 30 min after (half hour each side).
- * Relaxed 01:00–08:00: open until relaxUntil (default 12:00) same day.
+ * Other full-hour slots: open 30 min before until 30 min after.
+ * Relaxed 01:00-08:00: open until relaxUntil (default 12:00) same day.
  */
-function getSlotWindow(dayKey, hourSlot, opts = {}) {
+export function getSlotWindow(
+  dayKey: string,
+  hourSlot: string,
+  opts: SlotOptions = {}
+): { openAt: Date | null; closeAt: Date | null; kind: string } | null {
   const slotAt = slotInstantUtc(dayKey, hourSlot);
   if (!slotAt) return null;
 
@@ -82,9 +85,11 @@ function getSlotWindow(dayKey, hourSlot, opts = {}) {
   const relaxUntil = String(opts.relaxUntil || "12:00");
 
   if (relaxed.includes(hourSlot)) {
-    const openAt = slotInstantUtc(dayKey, "00:00");
-    const closeAt = slotInstantUtc(dayKey, relaxUntil);
-    return { openAt, closeAt, kind: "relaxed" };
+    return {
+      openAt: slotInstantUtc(dayKey, "00:00"),
+      closeAt: slotInstantUtc(dayKey, relaxUntil),
+      kind: "relaxed",
+    };
   }
 
   if (hourSlot === "19:00") {
@@ -94,16 +99,10 @@ function getSlotWindow(dayKey, hourSlot, opts = {}) {
       kind: "special-19:00",
     };
   }
+
   if (hourSlot === "18:30") {
     const openAt = slotInstantUtc(dayKey, "18:00");
-    return {
-      openAt,
-      closeAt: new Date(openAt.getTime() + 60 * 60 * 1000),
-      kind: "half-hour",
-    };
-  }
-  if (hourSlot === "19:30") {
-    const openAt = slotInstantUtc(dayKey, "19:00");
+    if (!openAt) return null;
     return {
       openAt,
       closeAt: new Date(openAt.getTime() + 60 * 60 * 1000),
@@ -111,7 +110,16 @@ function getSlotWindow(dayKey, hourSlot, opts = {}) {
     };
   }
 
-  // Standard hour: ±30 minutes
+  if (hourSlot === "19:30") {
+    const openAt = slotInstantUtc(dayKey, "19:00");
+    if (!openAt) return null;
+    return {
+      openAt,
+      closeAt: new Date(openAt.getTime() + 60 * 60 * 1000),
+      kind: "half-hour",
+    };
+  }
+
   return {
     openAt: new Date(slotAt.getTime() - 30 * 60 * 1000),
     closeAt: new Date(slotAt.getTime() + 30 * 60 * 1000),
@@ -119,27 +127,38 @@ function getSlotWindow(dayKey, hourSlot, opts = {}) {
   };
 }
 
-function isSlotEditable(dayKey, hourSlot, now = new Date(), opts = {}) {
+export function isSlotEditable(
+  dayKey: string,
+  hourSlot: string,
+  now: Date = new Date(),
+  opts: SlotOptions = {}
+): boolean {
   const w = getSlotWindow(dayKey, hourSlot, opts);
   if (!w || !w.openAt || !w.closeAt) return false;
   const t = now.getTime();
   return t >= w.openAt.getTime() - 500 && t < w.closeAt.getTime() + 500;
 }
 
-function isActiveSlot(dayKey, hourSlot, now = new Date(), opts = {}) {
-  const today = dayKeyDhaka(now);
-  if (dayKey !== today) return false;
+export function isActiveSlot(
+  dayKey: string,
+  hourSlot: string,
+  now: Date = new Date(),
+  opts: SlotOptions = {}
+): boolean {
+  if (dayKey !== dayKeyDhaka(now)) return false;
   return isSlotEditable(dayKey, hourSlot, now, {
     ...opts,
-    relaxedSlots: [], // active highlight ignores relaxed all-day window
+    relaxedSlots: [],
   });
 }
 
 /**
- * After first submit, fields locked for EDIT_LOCK_MINUTES.
- * Returns { locked, unlockAt, remainingSec }
+ * After first submit, fields lock for EDIT_LOCK_MINUTES.
  */
-function editLockState(firstSubmittedAt, now = new Date()) {
+export function editLockState(
+  firstSubmittedAt?: Date | string | null,
+  now: Date = new Date()
+): { locked: boolean; unlockAt: Date | null; remainingSec: number } {
   if (!firstSubmittedAt) {
     return { locked: false, unlockAt: null, remainingSec: 0 };
   }
@@ -158,16 +177,3 @@ function editLockState(firstSubmittedAt, now = new Date()) {
     remainingSec: Math.ceil(remainingMs / 1000),
   };
 }
-
-module.exports = {
-  CIRCLE_STATIONS,
-  SLOT_ORDER,
-  DEFAULT_RELAXED,
-  EDIT_LOCK_MINUTES,
-  dayKeyDhaka,
-  slotInstantUtc,
-  getSlotWindow,
-  isSlotEditable,
-  isActiveSlot,
-  editLockState,
-};

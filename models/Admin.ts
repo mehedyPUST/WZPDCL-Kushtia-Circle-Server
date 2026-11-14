@@ -1,5 +1,5 @@
-const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
+import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
 
 const adminSchema = new mongoose.Schema(
   {
@@ -24,11 +24,6 @@ const adminSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
-    /**
-     * viewer — view only (home, calculator, history, max load, statistics)
-     * duty — full operational pages except admin; can save
-     * admin — settings, users, see who saved data
-     */
     role: {
       type: String,
       enum: [
@@ -50,11 +45,6 @@ const adminSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
-    /**
-     * Circle-load station this user may edit (manual SS).
-     * empty / null = none (unless admin).
-     * bottail is filled from Calculator — still can assign for visibility.
-     */
     assignedStation: {
       type: String,
       default: "",
@@ -63,31 +53,29 @@ const adminSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Sparse unique: multiple docs may omit email; only non-null emails must be unique
 adminSchema.index(
   { email: 1 },
   { unique: true, sparse: true, name: "email_1_sparse" }
 );
 
-adminSchema.pre("save", async function (next) {
-  // Never persist empty string / null email (breaks unique index on null)
+adminSchema.pre("save", async function () {
+  // Sparse unique index breaks if null or empty string is stored
   if (this.email == null || String(this.email).trim() === "") {
     this.email = undefined;
     this.set("email", undefined);
   }
 
-  if (!this.isModified("password")) return next();
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (error) {
-    next(error);
-  }
+  if (!this.isModified("password")) return;
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
 });
 
-adminSchema.methods.comparePassword = async function (candidatePassword) {
+adminSchema.methods.comparePassword = async function (
+  candidatePassword: string
+): Promise<boolean> {
   return bcrypt.compare(candidatePassword, this.password);
 };
 
-module.exports = mongoose.models.Admin || mongoose.model("Admin", adminSchema);
+const Admin: mongoose.Model<any> =
+  mongoose.models.Admin || mongoose.model("Admin", adminSchema);
+export default Admin;

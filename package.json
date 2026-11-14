@@ -7,7 +7,8 @@
     "start": "tsx api/index.ts",
     "dev": "tsx watch api/index.ts",
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

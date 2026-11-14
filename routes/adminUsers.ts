@@ -1,10 +1,23 @@
-const express = require("express");
-const Admin = require("../models/Admin");
-const { requireAuth, requireAdmin, normalizeRole } = require("../middleware/auth");
+import express, { type Request, type Response } from "express";
+import Admin from "../models/Admin.js";
+import { normalizeRole, requireAdmin } from "../middleware/auth.js";
+import {
+  clientError,
+  isDuplicateKeyError,
+  isValidObjectId,
+} from "../lib/errors.js";
 
 const router = express.Router();
 
-function publicUser(doc) {
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const ASSIGNABLE_ROLES = new Set([
+  "viewer",
+  "duty",
+  "admin",
+  "circle-load-input",
+]);
+
+function publicUser(doc: any) {
   const o = typeof doc.toObject === "function" ? doc.toObject() : doc;
   return {
     id: String(o._id),
@@ -20,129 +33,248 @@ function publicUser(doc) {
   };
 }
 
-router.get("/", requireAdmin, async (_req, res) => {
+router.get("/", requireAdmin, async (_req: Request, res: Response) => {
   try {
     const list = await Admin.find()
-      .select("username email displayName role isActive assignedStation lastLogin createdAt updatedAt")
+      .select(
+        "username email displayName role isActive assignedStation lastLogin createdAt updatedAt"
+      )
       .sort({ username: 1 })
       .lean();
-    // All roles (viewer, duty, admin, circle-load-input, legacy operator/duty-person)
+
     const data = list.map((u) => publicUser(u));
-    res.json({
-      success: true,
-      data,
-      count: data.length,
-      byRole: data.reduce((acc, u) => {
-        const r = u.role || "viewer";
-        acc[r] = (acc[r] || 0) + 1;
-        return acc;
-      }, {}),
-    });
+    const byRole = data.reduce<Record<string, number>>((acc, u) => {
+      const r = u.role || "viewer";
+      acc[r] = (acc[r] || 0) + 1;
+      return acc;
+    }, {});
+
+    res.json({ success: true, data, count: data.length, byRole });
   } catch (err) {
-    res.status(500).json({ success: false, message: process.env.NODE_ENV === "production" ? "Failed to list users" : (err.message || "Failed to list users") });
+    res.status(500).json({
+      success: false,
+      message: clientError(err) || "Failed to list users",
+    });
   }
 });
 
-router.post("/", requireAdmin, async (req, res) => {
+router.post("/", requireAdmin, async (req: Request, res: Response) => {
   try {
-    const { username, password, email, displayName, role, assignedStation } = req.body || {};
+    const { username, password, email, displayName, role, assignedStation } =
+      req.body || {};
+
     if (!username || !password) {
-      return res.status(400).json({ success: false, message: "Username and password are required" });
+      res.status(400).json({
+        success: false,
+        message: "Username and password are required",
+      });
+      return;
     }
     if (String(password).length < 8) {
-      return res.status(400).json({ success: false, message: "Password must be at least 8 characters" });
+      res.status(400).json({
+        success: false,
+        message: "Password must be at least 8 characters",
+      });
+      return;
     }
 
     let nextRole = normalizeRole(role || "viewer");
-    if (!["viewer", "duty", "admin", "circle-load-input"].includes(nextRole))
-      nextRole = "viewer";
+    if (!ASSIGNABLE_ROLES.has(nextRole)) nextRole = "viewer";
 
     const uname = String(username).trim().toLowerCase();
     if (!/^[a-z0-9._-]{3,32}$/.test(uname)) {
-      return res.status(400).json({
+      res.status(400).json({
         success: false,
         message: "Username: 3–32 chars, lowercase letters, numbers, . _ -",
       });
+      return;
+    }
+
+    const emailTrim = email != null ? String(email).trim().toLowerCase() : "";
+    if (emailTrim && !EMAIL_REGEX.test(emailTrim)) {
+      res
+        .status(400)
+        .json({ success: false, message: "Invalid email address" });
+      return;
     }
 
     const exists = await Admin.findOne({
       $or: [
         { username: uname },
         { username: String(username).trim() },
-        ...(email ? [{ email: String(email).trim().toLowerCase() }] : []),
+        ...(emailTrim ? [{ email: emailTrim }] : []),
       ],
     });
     if (exists) {
-      return res.status(409).json({ success: false, message: "Username or email already exists" });
+      res.status(409).json({
+        success: false,
+        message: "Username or email already exists",
+      });
+      return;
     }
 
-    const createPayload = {
+    const createPayload: Record<string, any> = {
       username: uname,
       password: String(password),
       displayName: displayName ? String(displayName).trim() : "",
       role: nextRole,
       isActive: true,
-      assignedStation: nextRole === "circle-load-input" ? String(assignedStation || "").trim() : "",
+      assignedStation:
+        nextRole === "circle-load-input"
+          ? String(assignedStation || "").trim()
+          : "",
     };
-    const emailTrim = email != null ? String(email).trim().toLowerCase() : "";
     if (emailTrim) createPayload.email = emailTrim;
 
     const user = await Admin.create(createPayload);
-
-    res.status(201).json({ success: true, message: "User created", data: publicUser(user) });
+    res
+      .status(201)
+      .json({ success: true, message: "User created", data: publicUser(user) });
   } catch (err) {
-    res.status(500).json({ success: false, message: process.env.NODE_ENV === "production" ? "Failed to create user" : (err.message || "Failed to create user") });
+    if (isDuplicateKeyError(err)) {
+      res.status(409).json({
+        success: false,
+        message: "Username or email already exists",
+      });
+      return;
+    }
+    res.status(500).json({
+      success: false,
+      message: clientError(err) || "Failed to create user",
+    });
   }
 });
 
-router.patch("/:id", requireAdmin, async (req, res) => {
+router.patch("/:id", requireAdmin, async (req: Request, res: Response) => {
   try {
-    const user = await Admin.findById(req.params.id);
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
-
-    const { email, displayName, role, isActive, password } = req.body || {};
-    if (email != null) {
-      const emailTrim = String(email).trim().toLowerCase();
-      if (emailTrim) user.email = emailTrim;
-      else user.email = undefined;
+    if (!isValidObjectId(req.params.id)) {
+      res.status(400).json({ success: false, message: "Invalid user ID" });
+      return;
     }
-    if (displayName != null) user.displayName = String(displayName).trim();
+
+    const user = await Admin.findById(req.params.id);
+    if (!user) {
+      res.status(404).json({ success: false, message: "User not found" });
+      return;
+    }
+
+    const body = req.body || {};
+    const { email, displayName, role, isActive, password, assignedStation } =
+      body;
+
+    if (email !== undefined) {
+      if (email !== null && typeof email !== "string") {
+        res
+          .status(400)
+          .json({ success: false, message: "Email must be a string" });
+        return;
+      }
+      const emailTrim = email === null ? "" : email.trim().toLowerCase();
+      if (emailTrim && !EMAIL_REGEX.test(emailTrim)) {
+        res
+          .status(400)
+          .json({ success: false, message: "Invalid email address" });
+        return;
+      }
+      if (emailTrim) {
+        const clash = await Admin.findOne({
+          email: emailTrim,
+          _id: { $ne: user._id },
+        });
+        if (clash) {
+          res
+            .status(409)
+            .json({ success: false, message: "Email already in use" });
+          return;
+        }
+        user.email = emailTrim;
+      } else {
+        user.email = undefined;
+        user.set("email", undefined);
+      }
+    }
+
+    if (displayName !== undefined) {
+      user.displayName =
+        displayName === null ? "" : String(displayName).trim().slice(0, 80);
+    }
+
     if (typeof isActive === "boolean") {
-      if (String(user._id) === String(req.admin.id) && isActive === false) {
-        return res.status(400).json({ success: false, message: "You cannot deactivate your own account" });
+      if (String(user._id) === String(req.admin!.id) && isActive === false) {
+        res.status(400).json({
+          success: false,
+          message: "You cannot deactivate your own account",
+        });
+        return;
       }
       user.isActive = isActive;
     }
+
     if (role != null) {
       user.role = normalizeRole(role);
     }
-    if (req.body.assignedStation != null) {
-      user.assignedStation = String(req.body.assignedStation || "");
+
+    if (assignedStation !== undefined) {
+      user.assignedStation =
+        assignedStation === null ? "" : String(assignedStation).trim();
     }
+
     if (password != null && String(password).length > 0) {
       if (String(password).length < 8) {
-        return res.status(400).json({ success: false, message: "Password must be at least 8 characters" });
+        res.status(400).json({
+          success: false,
+          message: "Password must be at least 8 characters",
+        });
+        return;
       }
       user.password = String(password);
     }
+
     await user.save();
-    res.json({ success: true, message: "User updated", data: publicUser(user) });
+    res.json({
+      success: true,
+      message: "User updated",
+      data: publicUser(user),
+    });
   } catch (err) {
-    res.status(500).json({ success: false, message: process.env.NODE_ENV === "production" ? "Failed to update user" : (err.message || "Failed to update user") });
+    if (isDuplicateKeyError(err)) {
+      res
+        .status(409)
+        .json({ success: false, message: "Email already in use" });
+      return;
+    }
+    res.status(500).json({
+      success: false,
+      message: clientError(err) || "Failed to update user",
+    });
   }
 });
 
-router.delete("/:id", requireAdmin, async (req, res) => {
+router.delete("/:id", requireAdmin, async (req: Request, res: Response) => {
   try {
-    if (String(req.params.id) === String(req.admin.id)) {
-      return res.status(400).json({ success: false, message: "Cannot delete your own account" });
+    if (!isValidObjectId(req.params.id)) {
+      res.status(400).json({ success: false, message: "Invalid user ID" });
+      return;
+    }
+    if (String(req.params.id) === String(req.admin!.id)) {
+      res.status(400).json({
+        success: false,
+        message: "Cannot delete your own account",
+      });
+      return;
     }
     const user = await Admin.findByIdAndDelete(req.params.id);
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    if (!user) {
+      res.status(404).json({ success: false, message: "User not found" });
+      return;
+    }
     res.json({ success: true, message: "User deleted" });
   } catch (err) {
-    res.status(500).json({ success: false, message: process.env.NODE_ENV === "production" ? "Failed to delete user" : (err.message || "Failed to delete user") });
+    res.status(500).json({
+      success: false,
+      message: clientError(err) || "Failed to delete user",
+    });
   }
 });
 
-module.exports = router;
+export default router;

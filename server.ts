@@ -2,4 +2,10 @@
  * Local development entrypoint.
  * Production / Vercel uses api/index.ts (same app).
  */
-module.exports = require("./api/index.ts");
+import app, { startServer } from "./api/index.js";
+
+if (require.main === module) {
+  startServer();
+}
+
+export default app;

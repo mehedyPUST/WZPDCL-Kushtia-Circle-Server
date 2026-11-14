@@ -1,15 +1,26 @@
-const express = require("express");
-const Admin = require("../models/Admin");
-const { generateToken, requireAuth, getTokenFromRequest, normalizeRole } = require("../middleware/auth");
-const jwt = require("jsonwebtoken");
+import express, { type CookieOptions, type Request, type Response } from "express";
+import Admin from "../models/Admin.js";
+import {
+  generateToken,
+  getTokenFromRequest,
+  normalizeRole,
+  requireAuth,
+  verifyToken,
+} from "../middleware/auth.js";
+import { clientError, isDuplicateKeyError } from "../lib/errors.js";
 
 const router = express.Router();
 
 const MIN_PASSWORD_LENGTH = 8;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-/** Simple in-memory rate limit: max attempts per key per window. */
-const rateBuckets = new Map();
-function rateLimit(key, maxAttempts = 10, windowMs = 15 * 60 * 1000) {
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function rateLimit(
+  key: string,
+  maxAttempts = 10,
+  windowMs = 15 * 60 * 1000
+): { limited: boolean; retryAfterSec?: number } {
   const now = Date.now();
   let entry = rateBuckets.get(key);
   if (!entry || now > entry.resetAt) {
@@ -26,13 +37,16 @@ function rateLimit(key, maxAttempts = 10, windowMs = 15 * 60 * 1000) {
   return { limited: false };
 }
 
-function clientError(err) {
-  return process.env.NODE_ENV === "production" ? undefined : err?.message;
+function getClientIp(req: Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",")[0].trim();
+  }
+  return req.ip || "unknown";
 }
 
-function cookieOptions() {
+function cookieOptions(): CookieOptions {
   const isProd = process.env.NODE_ENV === "production";
-  // Cross-site cookie (frontend on *.vercel.app, API on another host)
   return {
     httpOnly: true,
     secure: isProd,
@@ -42,78 +56,78 @@ function cookieOptions() {
   };
 }
 
+function serializeAdmin(admin: any) {
+  return {
+    id: admin._id,
+    username: admin.username,
+    email: admin.email || "",
+    displayName: admin.displayName || "",
+    role: normalizeRole(admin.role),
+    assignedStation: admin.assignedStation || "",
+    lastLogin: admin.lastLogin || null,
+  };
+}
+
 // POST /api/auth/login
-router.post("/login", async (req, res) => {
+router.post("/login", async (req: Request, res: Response) => {
   try {
     const { username, password } = req.body || {};
-    const ip = req.ip || req.headers["x-forwarded-for"] || "unknown";
+    const ip = getClientIp(req);
     const limitKey = `login:${ip}:${String(username || "").trim().toLowerCase()}`;
     const rl = rateLimit(limitKey, 10, 15 * 60 * 1000);
     if (rl.limited) {
-      return res.status(429).json({
+      res.status(429).json({
         success: false,
         message: `Too many login attempts. Try again in ${rl.retryAfterSec}s.`,
       });
+      return;
     }
 
     if (!username || !password) {
-      return res.status(400).json({
+      res.status(400).json({
         success: false,
         message: "Username and password are required",
       });
+      return;
     }
 
+    const identifier = String(username).trim();
     const admin = await Admin.findOne({
-      $or: [
-        { username: String(username).trim() },
-        { email: String(username).trim().toLowerCase() },
-      ],
+      $or: [{ username: identifier }, { email: identifier.toLowerCase() }],
     });
 
     if (!admin) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid credentials",
-      });
+      res.status(401).json({ success: false, message: "Invalid credentials" });
+      return;
     }
 
     if (admin.isActive === false) {
-      return res.status(403).json({
+      res.status(403).json({
         success: false,
         message:
           "You are blocked by the site admin. Please contact Bottail SS.",
         blocked: true,
       });
+      return;
     }
 
-    const isMatch = await admin.comparePassword(password);
+    const isMatch = await admin.comparePassword(String(password));
     if (!isMatch) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid credentials",
-      });
+      res.status(401).json({ success: false, message: "Invalid credentials" });
+      return;
     }
 
     admin.lastLogin = new Date();
     await admin.save();
 
     const token = generateToken(admin._id, admin.username, admin.role);
-
     res.cookie("admin_token", token, cookieOptions());
 
-    // Always return token in body for cross-origin clients (Vercel)
     res.json({
       success: true,
       message: "Login successful",
       token,
-      data: {
-        id: admin._id,
-        username: admin.username,
-        email: admin.email,
-        role: normalizeRole(admin.role),
-        assignedStation: admin.assignedStation || "",
-        lastLogin: admin.lastLogin,
-      },
+      data: serializeAdmin(admin),
     });
   } catch (error) {
     console.error("Login error:", error);
@@ -126,7 +140,7 @@ router.post("/login", async (req, res) => {
 });
 
 // POST /api/auth/logout
-router.post("/logout", async (req, res) => {
+router.post("/logout", (_req: Request, res: Response) => {
   res.clearCookie("admin_token", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
@@ -137,42 +151,35 @@ router.post("/logout", async (req, res) => {
 });
 
 // GET /api/auth/check
-router.get("/check", async (req, res) => {
+router.get("/check", async (req: Request, res: Response) => {
   try {
     const token = getTokenFromRequest(req);
     if (!token) {
-      return res.json({ success: true, authenticated: false });
+      res.json({ success: true, authenticated: false });
+      return;
     }
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || (process.env.NODE_ENV === "production" ? undefined : "dev-only-change-me")
-    );
+    const decoded = verifyToken(token);
     const admin = await Admin.findById(decoded.id).select(
-      "username email role isActive assignedStation lastLogin"
+      "username email displayName role isActive assignedStation lastLogin"
     );
     if (!admin) {
-      return res.json({ success: true, authenticated: false });
+      res.json({ success: true, authenticated: false });
+      return;
     }
     if (admin.isActive === false) {
-      return res.json({
+      res.json({
         success: true,
         authenticated: false,
         blocked: true,
         message:
           "You are blocked by the site admin. Please contact Bottail SS.",
       });
+      return;
     }
     res.json({
       success: true,
       authenticated: true,
-      admin: {
-        id: admin._id,
-        username: admin.username,
-        email: admin.email,
-        role: normalizeRole(admin.role),
-        assignedStation: admin.assignedStation || "",
-        lastLogin: admin.lastLogin,
-      },
+      admin: serializeAdmin(admin),
     });
   } catch {
     res.json({ success: true, authenticated: false });
@@ -180,26 +187,24 @@ router.get("/check", async (req, res) => {
 });
 
 // GET /api/auth/me
-router.get("/me", requireAuth, async (req, res) => {
+router.get("/me", requireAuth, async (req: Request, res: Response) => {
   try {
-    const admin = await Admin.findById(req.admin.id).select(
+    const admin = await Admin.findById(req.admin!.id).select(
       "username email displayName role isActive assignedStation lastLogin"
     );
     if (!admin) {
-      return res.status(404).json({ success: false, message: "Admin not found" });
+      res.status(404).json({ success: false, message: "Admin not found" });
+      return;
     }
-    res.json({
-      success: true,
-      data: {
-        id: admin._id,
-        username: admin.username,
-        email: admin.email,
-        displayName: admin.displayName || "",
-        role: normalizeRole(admin.role),
-        assignedStation: admin.assignedStation || "",
-        lastLogin: admin.lastLogin,
-      },
-    });
+    if (admin.isActive === false) {
+      res.status(403).json({
+        success: false,
+        blocked: true,
+        message: "Account is blocked",
+      });
+      return;
+    }
+    res.json({ success: true, data: serializeAdmin(admin) });
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -209,27 +214,47 @@ router.get("/me", requireAuth, async (req, res) => {
   }
 });
 
-// PATCH /api/auth/profile — self-service displayName + email
-router.patch("/profile", requireAuth, async (req, res) => {
+// PATCH / PUT /api/auth/profile — self-service displayName + email
+async function updateProfileHandler(req: Request, res: Response) {
   try {
-    const admin = await Admin.findById(req.admin.id);
+    const admin = await Admin.findById(req.admin!.id);
     if (!admin) {
-      return res.status(404).json({ success: false, message: "Admin not found" });
+      res.status(404).json({ success: false, message: "Admin not found" });
+      return;
     }
     if (admin.isActive === false) {
-      return res.status(403).json({ success: false, message: "Account is blocked" });
+      res.status(403).json({ success: false, message: "Account is blocked" });
+      return;
     }
 
     const { displayName, email } = req.body || {};
 
     if (displayName !== undefined) {
-      admin.displayName = String(displayName).trim().slice(0, 80);
+      if (displayName !== null && typeof displayName !== "string") {
+        res.status(400).json({
+          success: false,
+          message: "Display name must be a string",
+        });
+        return;
+      }
+      admin.displayName =
+        displayName === null ? "" : displayName.trim().slice(0, 80);
     }
 
     if (email !== undefined) {
-      const nextEmail = String(email || "").trim().toLowerCase();
-      if (nextEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
-        return res.status(400).json({ success: false, message: "Invalid email address" });
+      if (email !== null && typeof email !== "string") {
+        res.status(400).json({
+          success: false,
+          message: "Email must be a string",
+        });
+        return;
+      }
+      const nextEmail = email === null ? "" : email.trim().toLowerCase();
+      if (nextEmail && !EMAIL_REGEX.test(nextEmail)) {
+        res
+          .status(400)
+          .json({ success: false, message: "Invalid email address" });
+        return;
       }
       if (nextEmail) {
         const clash = await Admin.findOne({
@@ -237,30 +262,31 @@ router.patch("/profile", requireAuth, async (req, res) => {
           _id: { $ne: admin._id },
         });
         if (clash) {
-          return res.status(409).json({ success: false, message: "Email already in use" });
+          res
+            .status(409)
+            .json({ success: false, message: "Email already in use" });
+          return;
         }
         admin.email = nextEmail;
       } else {
         admin.email = undefined;
+        admin.set("email", undefined);
       }
     }
 
     await admin.save();
 
-    const data = {
-      id: admin._id,
-      username: admin.username,
-      email: admin.email || "",
-      displayName: admin.displayName || "",
-      role: normalizeRole(admin.role),
-      assignedStation: admin.assignedStation || "",
-      lastLogin: admin.lastLogin,
-    };
-
+    const data = serializeAdmin(admin);
     const token = generateToken(admin._id, admin.username, admin.role);
     res.cookie("admin_token", token, cookieOptions());
     res.json({ success: true, message: "Profile updated", token, data });
   } catch (error) {
+    if (isDuplicateKeyError(error)) {
+      res
+        .status(409)
+        .json({ success: false, message: "Email already in use" });
+      return;
+    }
     console.error("Profile update error:", error);
     res.status(500).json({
       success: false,
@@ -268,131 +294,154 @@ router.patch("/profile", requireAuth, async (req, res) => {
       error: clientError(error),
     });
   }
-});
+}
+
+router.patch("/profile", requireAuth, updateProfileHandler);
+router.put("/profile", requireAuth, updateProfileHandler);
 
 // POST /api/auth/change-password
-router.post("/change-password", requireAuth, async (req, res) => {
-  try {
-    const { currentPassword, newPassword } = req.body || {};
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({
+router.post(
+  "/change-password",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      const { currentPassword, newPassword } = req.body || {};
+      if (!currentPassword || !newPassword) {
+        res.status(400).json({
+          success: false,
+          message: "Current password and new password are required",
+        });
+        return;
+      }
+      if (String(newPassword).length < MIN_PASSWORD_LENGTH) {
+        res.status(400).json({
+          success: false,
+          message: `New password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+        });
+        return;
+      }
+      if (String(currentPassword) === String(newPassword)) {
+        res.status(400).json({
+          success: false,
+          message: "New password must be different from current password",
+        });
+        return;
+      }
+
+      const admin = await Admin.findById(req.admin!.id);
+      if (!admin) {
+        res.status(404).json({ success: false, message: "Admin not found" });
+        return;
+      }
+      if (admin.isActive === false) {
+        res
+          .status(403)
+          .json({ success: false, message: "Account is blocked" });
+        return;
+      }
+
+      const match = await admin.comparePassword(String(currentPassword));
+      if (!match) {
+        res.status(401).json({
+          success: false,
+          message: "Current password is incorrect",
+        });
+        return;
+      }
+
+      admin.password = String(newPassword);
+      await admin.save();
+
+      const data = serializeAdmin(admin);
+      const token = generateToken(admin._id, admin.username, admin.role);
+      res.cookie("admin_token", token, cookieOptions());
+      res.json({
+        success: true,
+        message: "Password changed successfully",
+        token,
+        data,
+      });
+    } catch (error) {
+      console.error("Change password error:", error);
+      res.status(500).json({
         success: false,
-        message: "Current password and new password are required",
+        message: "Failed to change password",
+        error: clientError(error),
       });
     }
-    if (String(newPassword).length < MIN_PASSWORD_LENGTH) {
-      return res.status(400).json({
-        success: false,
-        message: `New password must be at least ${MIN_PASSWORD_LENGTH} characters`,
-      });
-    }
-    if (String(currentPassword) === String(newPassword)) {
-      return res.status(400).json({
-        success: false,
-        message: "New password must be different from current password",
-      });
-    }
-
-    const admin = await Admin.findById(req.admin.id);
-    if (!admin) {
-      return res.status(404).json({ success: false, message: "Admin not found" });
-    }
-
-    const match = await admin.comparePassword(String(currentPassword));
-    if (!match) {
-      return res.status(401).json({
-        success: false,
-        message: "Current password is incorrect",
-      });
-    }
-
-    admin.password = String(newPassword);
-    await admin.save();
-
-    const data = {
-      id: admin._id,
-      username: admin.username,
-      email: admin.email || "",
-      displayName: admin.displayName || "",
-      role: normalizeRole(admin.role),
-      assignedStation: admin.assignedStation || "",
-      lastLogin: admin.lastLogin,
-    };
-
-    const token = generateToken(admin._id, admin.username, admin.role);
-    res.cookie("admin_token", token, cookieOptions());
-    res.json({
-      success: true,
-      message: "Password changed successfully",
-      token,
-      data,
-    });
-  } catch (error) {
-    console.error("Change password error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to change password",
-      error: clientError(error),
-    });
   }
-});
+);
 
 // POST /api/auth/register — first admin free, later need secret
-router.post("/register", async (req, res) => {
+router.post("/register", async (req: Request, res: Response) => {
   try {
     const { username, password, email, secret } = req.body || {};
 
     if (!username || !password) {
-      return res.status(400).json({
+      res.status(400).json({
         success: false,
         message: "Username and password are required",
       });
+      return;
     }
 
     if (String(password).length < MIN_PASSWORD_LENGTH) {
-      return res.status(400).json({
+      res.status(400).json({
         success: false,
         message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
       });
+      return;
     }
 
-    const ip = req.ip || req.headers["x-forwarded-for"] || "unknown";
+    const ip = getClientIp(req);
     const rl = rateLimit(`register:${ip}`, 5, 60 * 60 * 1000);
     if (rl.limited) {
-      return res.status(429).json({
+      res.status(429).json({
         success: false,
         message: `Too many registration attempts. Try again in ${rl.retryAfterSec}s.`,
       });
+      return;
     }
 
     const count = await Admin.countDocuments();
     if (count > 0) {
       const expected = process.env.ADMIN_REGISTRATION_SECRET;
       if (!expected || secret !== expected) {
-        return res.status(403).json({
+        res.status(403).json({
           success: false,
           message: "Registration closed. Valid secret required.",
         });
+        return;
       }
+    }
+
+    const cleanUsername = String(username).trim();
+    const cleanEmail =
+      email && String(email).trim() ? String(email).trim().toLowerCase() : "";
+
+    if (cleanEmail && !EMAIL_REGEX.test(cleanEmail)) {
+      res.status(400).json({ success: false, message: "Invalid email address" });
+      return;
     }
 
     const exists = await Admin.findOne({
       $or: [
-        { username: String(username).trim() },
-        ...(email ? [{ email: String(email).trim().toLowerCase() }] : []),
+        { username: cleanUsername },
+        ...(cleanEmail ? [{ email: cleanEmail }] : []),
       ],
     });
     if (exists) {
-      return res.status(409).json({
+      res.status(409).json({
         success: false,
         message: "Username or email already exists",
       });
+      return;
     }
 
     const admin = await Admin.create({
-      username: String(username).trim(),
-      password,
-      email: email && String(email).trim() ? String(email).trim().toLowerCase() : undefined,
+      username: cleanUsername,
+      password: String(password),
+      email: cleanEmail || undefined,
       role: count === 0 ? "superadmin" : "admin",
       isActive: true,
     });
@@ -403,11 +452,18 @@ router.post("/register", async (req, res) => {
       data: {
         id: admin._id,
         username: admin.username,
-        email: admin.email,
+        email: admin.email || "",
         role: normalizeRole(admin.role),
       },
     });
   } catch (error) {
+    if (isDuplicateKeyError(error)) {
+      res.status(409).json({
+        success: false,
+        message: "Username or email already exists",
+      });
+      return;
+    }
     console.error("Register error:", error);
     res.status(500).json({
       success: false,
@@ -417,4 +473,4 @@ router.post("/register", async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;
