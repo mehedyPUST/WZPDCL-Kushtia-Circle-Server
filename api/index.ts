@@ -15,6 +15,7 @@ import dutyRosterRouter from "../routes/dutyRoster.js";
 import circleLoadRouter from "../routes/circleLoad.js";
 import stationNotesRouter from "../routes/stationNotes.js";
 import monthlyEnergyRouter from "../routes/monthlyEnergy.js";
+import nightLogRouter from "../routes/nightLog.js";
 
 const app = express();
 
@@ -36,7 +37,8 @@ app.use("/api", async (req: Request, _res: Response, next: NextFunction) => {
     req.path === "/health" ||
     req.path === "/circle-load/stations" ||
     req.path === "/auth/logout" ||
-    req.path === "/auth/check"
+    req.path === "/auth/check" ||
+    req.path === "/night-log/generate"
   ) {
     next();
     return;
@@ -78,6 +80,7 @@ app.use("/api/admin/duty-roster", dutyRosterRouter);
 app.use("/api/circle-load", circleLoadRouter);
 app.use("/api/station-notes", stationNotesRouter);
 app.use("/api/admin/monthly-energy", monthlyEnergyRouter);
+app.use("/api/night-log", nightLogRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ success: false, message: "Route not found" });

@@ -18,15 +18,6 @@ export function isOriginAllowed(origin?: string): boolean {
   const allowed = new Set([...DEFAULT_ORIGINS, ...fromEnv]);
   if (allowed.has(origin)) return true;
 
-  try {
-    const host = new URL(origin).hostname;
-    if (host.endsWith(".vercel.app") || host.endsWith(".run.app")) {
-      return true;
-    }
-  } catch {
-    // ignore malformed origin
-  }
-
   return false;
 }
 

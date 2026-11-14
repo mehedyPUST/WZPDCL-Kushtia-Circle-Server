@@ -83,6 +83,33 @@ function buildEventDateFilter(query: Record<string, any>) {
   return { $expr: parts.length === 1 ? parts[0] : { $and: parts } };
 }
 
+// GET /api/calculations/slot-check — check an existing active hourly record.
+router.get("/slot-check", optionalAuth, async (req: Request, res: Response) => {
+  try {
+    const hourSlot = String(req.query.hourSlot || "").trim();
+    const dayStart = req.query.dayStart ? new Date(String(req.query.dayStart)) : null;
+    const dayEnd = req.query.dayEnd ? new Date(String(req.query.dayEnd)) : null;
+    if (!hourSlot || !dayStart || !dayEnd || Number.isNaN(dayStart.getTime()) || Number.isNaN(dayEnd.getTime()) || dayStart >= dayEnd) {
+      res.status(400).json({ success: false, message: "hourSlot, dayStart and dayEnd are required" });
+      return;
+    }
+    const existing = await Calculation.findOne({
+      $and: [ACTIVE_CALCULATION_FILTER, { hourSlot }, {
+        $or: [
+          { calculatedAt: { $gte: dayStart, $lt: dayEnd } },
+          { calculatedAt: { $exists: false }, createdAt: { $gte: dayStart, $lt: dayEnd } },
+        ],
+      }],
+    }).sort({ calculatedAt: -1 }).lean<any>();
+    res.json({ success: true, exists: !!existing, data: existing ? {
+      _id: existing._id, hourSlot: existing.hourSlot, calculatedAt: existing.calculatedAt,
+      totalMW: existing.totalMW, note: existing.note || "",
+    } : null });
+  } catch (error) {
+    res.status(500).json({ success: false, message: clientError(error) || "Failed to check slot" });
+  }
+});
+
 // POST /api/calculations - Save or bulk-manage calculations
 router.post("/", requireDuty, async (req: Request, res: Response) => {
   try {
