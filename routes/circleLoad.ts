@@ -433,7 +433,7 @@ router.post("/entry", requireAuth, async (req: Request, res: Response) => {
       return;
     }
 
-    // Consumption + LS → demand. Allotment optional; empty ⇒ demand (editable always on client).
+    // Consumption + LS → demand. Allotment defaults to consumption only when LS is zero.
     const consumptionIn = toNum(body.actualLoad);
     const loadshedIn = toNum(body.loadshed);
     const loadshedVal = loadshedIn == null ? 0 : loadshedIn;
@@ -471,20 +471,18 @@ router.post("/entry", requireAuth, async (req: Request, res: Response) => {
       sourceVal = "calculator";
     }
 
-    const demandVal =
-      actualLoadVal == null ? null : Number(actualLoadVal) + Number(loadshedVal || 0);
-    if (allotmentIn == null && demandVal != null) {
-      allotmentIn = demandVal;
+    // If there is no loadshed, default allotment to consumption. When LS exists,
+    // allotment remains optional and is only stored when explicitly supplied.
+    if (allotmentIn == null && actualLoadVal != null && loadshedVal === 0) {
+      allotmentIn = Number(actualLoadVal);
     }
 
     const pbsCons = toNum(body.pbsLoad);
     const pbsLs = toNum(body.pbsLoadshed);
     const pbsLsVal = pbsLs == null ? 0 : pbsLs;
     let pbsAllot = toNum(body.pbsAllotment);
-    const pbsDemand =
-      pbsCons == null ? null : Number(pbsCons) + Number(pbsLsVal || 0);
-    if (pbsAllot == null && pbsDemand != null) {
-      pbsAllot = pbsDemand;
+    if (pbsAllot == null && pbsCons != null && pbsLsVal === 0) {
+      pbsAllot = Number(pbsCons);
     }
 
     const fields: Record<string, any> = {
@@ -613,7 +611,9 @@ router.get(
             : consumption + (Number.isFinite(loadshed) ? loadshed : 0);
         let allotment =
           e.pgcbAllotment == null ? null : Number(e.pgcbAllotment);
-        if (allotment == null && demand != null) allotment = demand;
+        if (allotment == null && consumption != null && loadshed === 0) {
+          allotment = consumption;
+        }
         return { consumption, loadshed, allotment, demand };
       };
 
