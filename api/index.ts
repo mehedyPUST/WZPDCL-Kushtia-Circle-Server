@@ -14,6 +14,7 @@ import adminUsersRouter from "../routes/adminUsers.js";
 import dutyRosterRouter from "../routes/dutyRoster.js";
 import circleLoadRouter from "../routes/circleLoad.js";
 import stationNotesRouter from "../routes/stationNotes.js";
+import shiftMessagesRouter from "../routes/shiftMessages.js";
 import monthlyEnergyRouter from "../routes/monthlyEnergy.js";
 import nightLogRouter from "../routes/nightLog.js";
 
@@ -79,6 +80,7 @@ app.use("/api/admin/users", adminUsersRouter);
 app.use("/api/admin/duty-roster", dutyRosterRouter);
 app.use("/api/circle-load", circleLoadRouter);
 app.use("/api/station-notes", stationNotesRouter);
+app.use("/api/shift-messages", shiftMessagesRouter);
 app.use("/api/admin/monthly-energy", monthlyEnergyRouter);
 app.use("/api/night-log", nightLogRouter);
 

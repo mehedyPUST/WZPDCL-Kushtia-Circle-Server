@@ -257,6 +257,11 @@ router.get("/sheet", optionalAuth, async (req: Request, res: Response) => {
     const canEditStation = (stationId: string) => {
       if (!req.admin || !editable) return false;
       if (role === "admin") return true;
+      // Bottail consumption is calculator-driven; duty / circle-load-input
+      // may still enter loadshed + allotment for the active slot.
+      if (stationId === "bottail") {
+        return role === "circle-load-input" || role === "duty";
+      }
       if (role === "circle-load-input" || role === "duty") {
         return Boolean(assignedStation) && assignedStation === stationId;
       }
@@ -357,17 +362,18 @@ router.post("/entry", requireAuth, async (req: Request, res: Response) => {
 
     const role = normalizeRole(req.admin?.role);
 
-    if (stationId === "bottail" && role !== "admin") {
-      res.status(403).json({
-        success: false,
-        message:
-          "Bottail is filled from the Calculator. Only admin can override it here.",
-      });
-      return;
-    }
-
     if (role !== "admin") {
-      if (role === "circle-load-input" || role === "duty") {
+      if (stationId === "bottail") {
+        // Non-admin: may submit loadshed + allotment only (consumption stays calculated).
+        if (role !== "circle-load-input" && role !== "duty") {
+          res.status(403).json({
+            success: false,
+            message:
+              "Bottail consumption is filled from the Calculator. Only duty / circle-load-input can enter LS and allotment.",
+          });
+          return;
+        }
+      } else if (role === "circle-load-input" || role === "duty") {
         let station = req.admin?.assignedStation;
         if (station === undefined && req.admin?.id) {
           const u = await Admin.findById(req.admin.id)
@@ -427,20 +433,69 @@ router.post("/entry", requireAuth, async (req: Request, res: Response) => {
       return;
     }
 
+    // Consumption + LS → demand. Allotment optional; empty ⇒ demand (editable always on client).
+    const consumptionIn = toNum(body.actualLoad);
+    const loadshedIn = toNum(body.loadshed);
+    const loadshedVal = loadshedIn == null ? 0 : loadshedIn;
+    let allotmentIn = toNum(body.pgcbAllotment);
+
+    let actualLoadVal = consumptionIn;
+    let sourceVal: string =
+      stationId === "bottail"
+        ? role === "admin"
+          ? "admin-override"
+          : "calculator"
+        : "manual";
+
+    if (stationId === "bottail" && role !== "admin") {
+      // Keep calculator consumption; only LS / allotment / note may change.
+      const prior = await CircleLoadEntry.findOne({
+        dayKey,
+        hourSlot,
+        stationId,
+      }).lean<{ actualLoad?: number | null; source?: string }>();
+      if (prior?.actualLoad != null && Number.isFinite(Number(prior.actualLoad))) {
+        actualLoadVal = Number(prior.actualLoad);
+      } else {
+        await pullBottailFromCalculations(dayKey, hourSlot);
+        const again = await CircleLoadEntry.findOne({
+          dayKey,
+          hourSlot,
+          stationId,
+        }).lean<{ actualLoad?: number | null }>();
+        actualLoadVal =
+          again?.actualLoad != null && Number.isFinite(Number(again.actualLoad))
+            ? Number(again.actualLoad)
+            : null;
+      }
+      sourceVal = "calculator";
+    }
+
+    const demandVal =
+      actualLoadVal == null ? null : Number(actualLoadVal) + Number(loadshedVal || 0);
+    if (allotmentIn == null && demandVal != null) {
+      allotmentIn = demandVal;
+    }
+
+    const pbsCons = toNum(body.pbsLoad);
+    const pbsLs = toNum(body.pbsLoadshed);
+    const pbsLsVal = pbsLs == null ? 0 : pbsLs;
+    let pbsAllot = toNum(body.pbsAllotment);
+    const pbsDemand =
+      pbsCons == null ? null : Number(pbsCons) + Number(pbsLsVal || 0);
+    if (pbsAllot == null && pbsDemand != null) {
+      pbsAllot = pbsDemand;
+    }
+
     const fields: Record<string, any> = {
-      actualLoad: toNum(body.actualLoad),
-      pgcbAllotment: toNum(body.pgcbAllotment),
-      loadshed: toNum(body.loadshed),
-      pbsLoad: toNum(body.pbsLoad),
-      pbsAllotment: toNum(body.pbsAllotment),
-      pbsLoadshed: toNum(body.pbsLoadshed),
+      actualLoad: actualLoadVal,
+      pgcbAllotment: allotmentIn,
+      loadshed: loadshedVal,
+      pbsLoad: pbsCons,
+      pbsAllotment: pbsAllot,
+      pbsLoadshed: pbsLs,
       note: body.note != null ? String(body.note) : "",
-      source:
-        stationId === "bottail"
-          ? role === "admin"
-            ? "admin-override"
-            : "calculator"
-          : "manual",
+      source: sourceVal,
       updatedBy: req.admin!.id,
       updatedByUsername: req.admin!.username || "",
     };
