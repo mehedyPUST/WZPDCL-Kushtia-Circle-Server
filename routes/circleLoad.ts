@@ -408,7 +408,8 @@ router.post("/entry", requireAuth, async (req: Request, res: Response) => {
       relaxUntil: settingsDoc?.circleRelaxUntil || "12:00",
     };
 
-    if (!isSlotEditable(dayKey, hourSlot, new Date(), slotOpts)) {
+    // Admins can correct any circle-load slot, including closed/previous slots.
+    if (role !== "admin" && !isSlotEditable(dayKey, hourSlot, new Date(), slotOpts)) {
       res.status(409).json({
         success: false,
         message: isRelaxedMsg(hourSlot, slotOpts),
@@ -423,7 +424,8 @@ router.post("/entry", requireAuth, async (req: Request, res: Response) => {
     }).lean<{ firstSubmittedAt?: Date }>();
 
     const lock = editLockState(existing?.firstSubmittedAt);
-    if (lock.locked) {
+    // Admin corrections are not blocked by the normal post-submit edit lock.
+    if (role !== "admin" && lock.locked) {
       res.status(423).json({
         success: false,
         message: `Edit locked for ${EDIT_LOCK_MINUTES} min after first submit. Try again in ${lock.remainingSec}s.`,
