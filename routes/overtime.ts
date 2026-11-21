@@ -1,6 +1,12 @@
 import express, { type Request, type Response } from "express";
 import OvertimeSheet from "../models/OvertimeSheet.js";
-import { requireAuth } from "../middleware/auth.js";
+import Admin from "../models/Admin.js";
+import {
+  normalizeRole,
+  requireAuth,
+  requireDuty,
+  type NormalizedRole,
+} from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -89,7 +95,112 @@ function dhakaYearMonth() {
   };
 }
 
-/** GET /api/overtime?year=&month= — current user's sheet */
+function canAccessOthers(role?: NormalizedRole | string | null): boolean {
+  const r = normalizeRole(role);
+  return r === "duty" || r === "admin";
+}
+
+function isDutyLikeRole(role?: string | null): boolean {
+  const r = normalizeRole(role);
+  return r === "duty" || r === "admin";
+}
+
+/**
+ * GET /api/overtime/all?year=&month=
+ * Duty SBA + Admin: list every duty person's overtime sheet for the month
+ * (includes duty users who have not saved a sheet yet).
+ */
+router.get("/all", requireDuty, async (req: Request, res: Response) => {
+  try {
+    const dhaka = dhakaYearMonth();
+    let year = parseInt(String(req.query.year || ""), 10);
+    let month = parseInt(String(req.query.month || ""), 10);
+    if (!Number.isFinite(year) || year < 2000 || year > 2100) year = dhaka.year;
+    if (!Number.isFinite(month) || month < 1 || month > 12) month = dhaka.month;
+
+    // All active duty / admin users (SBA duty persons)
+    const dutyUsers = await Admin.find({
+      isActive: { $ne: false },
+      role: {
+        $in: ["duty", "duty-person", "operator", "admin", "superadmin"],
+      },
+    })
+      .select("_id username displayName role assignedStation isActive")
+      .lean();
+
+    const userIds = dutyUsers.map((u: any) => String(u._id));
+
+    const sheets = await OvertimeSheet.find({
+      year,
+      month,
+      userId: { $in: userIds },
+    }).lean();
+
+    const sheetByUser = new Map<string, any>();
+    for (const s of sheets) {
+      sheetByUser.set(String((s as any).userId), s);
+    }
+
+    const items = dutyUsers.map((u: any) => {
+      const id = String(u._id);
+      const sheet = sheetByUser.get(id);
+      return {
+        userId: id,
+        username: String(u.username || ""),
+        displayName: String(u.displayName || u.username || ""),
+        role: normalizeRole(u.role),
+        assignedStation: String(u.assignedStation || ""),
+        hasSheet: Boolean(sheet),
+        sheet: sheet
+          ? serialize(sheet)
+          : {
+              userId: id,
+              year,
+              month,
+              employeeName: String(u.displayName || u.username || ""),
+              designation: "SBA-A",
+              weeklyHoliday: 0,
+              clLeaveDates: [],
+              excludedDates: [],
+              extraDutyEntries: [],
+              dutyShift: "C",
+              purpose: DEFAULT_PURPOSE,
+              updatedAt: null,
+              createdAt: null,
+            },
+        updatedAt: sheet?.updatedAt
+          ? new Date(sheet.updatedAt).toISOString()
+          : null,
+      };
+    });
+
+    // Sort: users with sheets first, then by display name
+    items.sort((a, b) => {
+      if (a.hasSheet !== b.hasSheet) return a.hasSheet ? -1 : 1;
+      return a.displayName.localeCompare(b.displayName, "en");
+    });
+
+    res.json({
+      success: true,
+      year,
+      month,
+      total: items.length,
+      items,
+    });
+  } catch (err: any) {
+    console.error("[overtime GET /all]", err);
+    res.status(500).json({
+      success: false,
+      message: err?.message || "Failed to load team overtime data",
+    });
+  }
+});
+
+/**
+ * GET /api/overtime?year=&month=&userId=
+ * - Without userId: own sheet
+ * - With userId: own sheet, or any duty person's sheet if requester is duty/admin
+ */
 router.get("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const dhaka = dhakaYearMonth();
@@ -98,21 +209,50 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
     if (!Number.isFinite(year) || year < 2000 || year > 2100) year = dhaka.year;
     if (!Number.isFinite(month) || month < 1 || month > 12) month = dhaka.month;
 
-    const userId = String(req.adminId || req.admin?.id || "");
-    if (!userId) {
+    const selfId = String(req.adminId || req.admin?.id || "");
+    if (!selfId) {
       res.status(401).json({ success: false, message: "Authentication required" });
       return;
     }
 
-    const doc = await OvertimeSheet.findOne({ userId, year, month }).lean();
+    const requestedUserId = String(req.query.userId || "").trim();
+    let targetUserId = selfId;
+
+    if (requestedUserId && requestedUserId !== selfId) {
+      if (!canAccessOthers(req.admin?.role)) {
+        res.status(403).json({
+          success: false,
+          message: "Only duty SBA or admin can view other persons' overtime sheets",
+        });
+        return;
+      }
+      targetUserId = requestedUserId;
+    }
+
+    const doc = await OvertimeSheet.findOne({
+      userId: targetUserId,
+      year,
+      month,
+    }).lean();
+
     if (!doc) {
+      // Resolve display name for empty sheet
+      let employeeName = req.admin?.displayName || "";
+      if (targetUserId !== selfId) {
+        const u = await Admin.findById(targetUserId)
+          .select("displayName username")
+          .lean();
+        employeeName = String(
+          (u as any)?.displayName || (u as any)?.username || ""
+        );
+      }
       res.json({
         success: true,
         sheet: {
-          userId,
+          userId: targetUserId,
           year,
           month,
-          employeeName: req.admin?.displayName || "",
+          employeeName,
           designation: "SBA-A",
           weeklyHoliday: 0,
           clLeaveDates: [],
@@ -135,8 +275,11 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
-/** PUT /api/overtime — upsert current user's sheet for year/month */
-router.put("/", requireAuth, async (req: Request, res: Response) => {
+/**
+ * PUT /api/overtime — upsert sheet
+ * Body may include userId to edit another duty person's sheet (duty/admin only).
+ */
+router.put("/", requireDuty, async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
     const year = Number(body.year);
@@ -146,14 +289,40 @@ router.put("/", requireAuth, async (req: Request, res: Response) => {
       return;
     }
 
-    const userId = String(req.adminId || req.admin?.id || "");
-    if (!userId) {
+    const selfId = String(req.adminId || req.admin?.id || "");
+    if (!selfId) {
       res.status(401).json({ success: false, message: "Authentication required" });
       return;
     }
 
+    let targetUserId = selfId;
+    const bodyUserId = String(body.userId || "").trim();
+    if (bodyUserId && bodyUserId !== selfId) {
+      if (!canAccessOthers(req.admin?.role)) {
+        res.status(403).json({
+          success: false,
+          message: "Only duty SBA or admin can edit other persons' overtime sheets",
+        });
+        return;
+      }
+      // Ensure target is a duty-like user
+      const target = await Admin.findById(bodyUserId).select("role isActive").lean();
+      if (!target || (target as any).isActive === false) {
+        res.status(404).json({ success: false, message: "Target user not found" });
+        return;
+      }
+      if (!isDutyLikeRole((target as any).role)) {
+        res.status(400).json({
+          success: false,
+          message: "Target user is not a duty person",
+        });
+        return;
+      }
+      targetUserId = bodyUserId;
+    }
+
     const payload = {
-      userId,
+      userId: targetUserId,
       year,
       month,
       employeeName: String(body.employeeName || "").trim(),
@@ -167,7 +336,7 @@ router.put("/", requireAuth, async (req: Request, res: Response) => {
     };
 
     const doc = await OvertimeSheet.findOneAndUpdate(
-      { userId, year, month },
+      { userId: targetUserId, year, month },
       { $set: payload },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     ).lean();
