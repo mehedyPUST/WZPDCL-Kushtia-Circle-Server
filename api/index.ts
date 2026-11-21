@@ -17,6 +17,7 @@ import stationNotesRouter from "../routes/stationNotes.js";
 import shiftMessagesRouter from "../routes/shiftMessages.js";
 import monthlyEnergyRouter from "../routes/monthlyEnergy.js";
 import nightLogRouter from "../routes/nightLog.js";
+import overtimeRouter from "../routes/overtime.js";
 
 const app = express();
 
@@ -83,6 +84,7 @@ app.use("/api/station-notes", stationNotesRouter);
 app.use("/api/shift-messages", shiftMessagesRouter);
 app.use("/api/admin/monthly-energy", monthlyEnergyRouter);
 app.use("/api/night-log", nightLogRouter);
+app.use("/api/overtime", overtimeRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ success: false, message: "Route not found" });
