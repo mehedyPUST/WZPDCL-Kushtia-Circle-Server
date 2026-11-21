@@ -25,6 +25,7 @@ const overtimeSheetSchema = new mongoose.Schema(
     designation: { type: String, default: "SBA-A", trim: true },
     weeklyHoliday: { type: Number, default: 0, min: 0, max: 6 },
     clLeaveDates: { type: [String], default: [] },
+    excludedDates: { type: [String], default: [] },
     extraDutyEntries: { type: [extraDutyEntrySchema], default: [] },
     dutyShift: {
       type: String,

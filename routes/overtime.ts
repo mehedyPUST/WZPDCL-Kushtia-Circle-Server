@@ -61,6 +61,9 @@ function serialize(doc: any) {
     clLeaveDates: Array.isArray(doc.clLeaveDates)
       ? doc.clLeaveDates.map((d: any) => String(d))
       : [],
+    excludedDates: Array.isArray(doc.excludedDates)
+      ? doc.excludedDates.map((d: any) => String(d))
+      : [],
     extraDutyEntries: Array.isArray(doc.extraDutyEntries)
       ? doc.extraDutyEntries.map((e: any) => ({
           date: String(e.date || ""),
@@ -113,6 +116,7 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
           designation: "SBA-A",
           weeklyHoliday: 0,
           clLeaveDates: [],
+          excludedDates: [],
           extraDutyEntries: [],
           dutyShift: "C",
           purpose: DEFAULT_PURPOSE,
@@ -156,6 +160,7 @@ router.put("/", requireAuth, async (req: Request, res: Response) => {
       designation: String(body.designation || "SBA-A").trim() || "SBA-A",
       weeklyHoliday: Math.min(6, Math.max(0, Number(body.weeklyHoliday ?? 0))),
       clLeaveDates: parseYmdList(body.clLeaveDates),
+      excludedDates: parseYmdList(body.excludedDates),
       extraDutyEntries: parseExtraEntries(body.extraDutyEntries),
       dutyShift: normalizeShift(body.dutyShift ?? "C"),
       purpose: String(body.purpose || "").trim() || DEFAULT_PURPOSE,
